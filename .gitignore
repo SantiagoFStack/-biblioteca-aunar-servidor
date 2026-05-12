@@ -1,0 +1,5 @@
+.dart_tool/
+pubspec.lock
+bin/*.exe
+bin/*.log
+bin/biblioteca.json

@@ -4,37 +4,27 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as io;
 import 'package:shelf_router/shelf_router.dart';
 
-late String rutaJson;
-late String rutaLog;
+// Almacenamiento en memoria — sin archivos, sin permisos de filesystem
+final List<Map<String, dynamic>> _solicitudes = [];
 
 void main() async {
-  final directorio = File(Platform.resolvedExecutable).parent.path;
-  rutaJson = '$directorio${Platform.pathSeparator}biblioteca.json';
-  rutaLog = '$directorio${Platform.pathSeparator}biblioteca.log';
-
-  _log('Servidor iniciando en puerto 8080...');
-
-  if (!File(rutaJson).existsSync()) {
-    File(rutaJson).writeAsStringSync(jsonEncode({'solicitudes': []}));
-    _log('Archivo biblioteca.json creado.');
-  }
+  final puerto = int.tryParse(Platform.environment['PORT'] ?? '') ?? 8080;
 
   final router = Router()
+    ..get('/', _estadoServidor)
+    ..get('/estado', _estadoServidor)
     ..get('/prestar', _formularioPrestamo)
     ..post('/prestar', _registrarPrestamo)
     ..get('/solicitudes', _obtenerSolicitudes)
-    ..post('/solicitudes/confirmar', _confirmarSolicitud)
-    ..get('/estado', _estadoServidor);
+    ..post('/solicitudes/confirmar', _confirmarSolicitud);
 
   final handler = Pipeline()
       .addMiddleware(logRequests())
       .addMiddleware(_corsMiddleware())
       .addHandler(router.call);
 
-  final puerto = int.tryParse(Platform.environment['PORT'] ?? '') ?? 8080;
   final server = await io.serve(handler, InternetAddress.anyIPv4, puerto);
-  _log('Servidor corriendo en http://${server.address.host}:${server.port}');
-  print('✅ Biblioteca AUNAR — Servidor activo en puerto $puerto');
+  print('✅ Biblioteca AUNAR — Servidor activo en puerto ${server.port}');
 }
 
 Middleware _corsMiddleware() {
@@ -54,6 +44,17 @@ Map<String, String> _corsHeaders() => {
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
+
+Response _estadoServidor(Request req) {
+  return Response.ok(
+    jsonEncode({
+      'estado': 'activo',
+      'hora': DateTime.now().toIso8601String(),
+      'solicitudesPendientes': _solicitudes.where((s) => s['procesado'] == false).length,
+    }),
+    headers: {'content-type': 'application/json'},
+  );
+}
 
 Response _formularioPrestamo(Request req) {
   final libroId = req.url.queryParameters['id'] ?? '';
@@ -211,17 +212,8 @@ Future<Response> _registrarPrestamo(Request req) async {
       'procesado': false,
     };
 
-    final archivo = File(rutaJson);
-    Map<String, dynamic> datos = {'solicitudes': []};
-    if (archivo.existsSync()) {
-      try { datos = jsonDecode(archivo.readAsStringSync()); } catch (_) {}
-    }
-    final solicitudes = List<Map<String, dynamic>>.from(
-        (datos['solicitudes'] as List? ?? []).map((e) => Map<String, dynamic>.from(e)));
-    solicitudes.add(solicitud);
-    datos['solicitudes'] = solicitudes;
-    archivo.writeAsStringSync(jsonEncode(datos));
-    _log('Nueva solicitud: $nombre (CC: $cedula) → $titulo [$libroId]');
+    _solicitudes.add(solicitud);
+    print('[${DateTime.now().toIso8601String()}] Nueva solicitud: $nombre (CC: $cedula) → ${Uri.decodeComponent(titulo)}');
 
     final html = '''<!DOCTYPE html>
 <html lang="es">
@@ -281,28 +273,17 @@ Future<Response> _registrarPrestamo(Request req) async {
 
     return Response.ok(html, headers: {'content-type': 'text/html; charset=utf-8'});
   } catch (e) {
-    _log('Error al registrar préstamo: $e');
+    print('Error al registrar préstamo: $e');
     return Response.internalServerError(body: 'Error interno del servidor');
   }
 }
 
 Response _obtenerSolicitudes(Request req) {
-  try {
-    final archivo = File(rutaJson);
-    if (!archivo.existsSync()) {
-      return Response.ok(jsonEncode({'solicitudes': []}),
-          headers: {'content-type': 'application/json'});
-    }
-    final datos = jsonDecode(archivo.readAsStringSync());
-    final todas = List<Map<String, dynamic>>.from(
-        (datos['solicitudes'] as List? ?? []).map((e) => Map<String, dynamic>.from(e)));
-    // Solo retorna las no procesadas
-    final pendientes = todas.where((s) => s['procesado'] == false).toList();
-    return Response.ok(jsonEncode({'solicitudes': pendientes}),
-        headers: {'content-type': 'application/json'});
-  } catch (e) {
-    return Response.internalServerError(body: 'Error: $e');
-  }
+  final pendientes = _solicitudes.where((s) => s['procesado'] == false).toList();
+  return Response.ok(
+    jsonEncode({'solicitudes': pendientes}),
+    headers: {'content-type': 'application/json'},
+  );
 }
 
 Future<Response> _confirmarSolicitud(Request req) async {
@@ -311,38 +292,18 @@ Future<Response> _confirmarSolicitud(Request req) async {
     final params = jsonDecode(body) as Map<String, dynamic>;
     final solicitudId = params['id']?.toString() ?? '';
 
-    final archivo = File(rutaJson);
-    final datos = jsonDecode(archivo.readAsStringSync()) as Map<String, dynamic>;
-    final solicitudes = List<Map<String, dynamic>>.from(
-        (datos['solicitudes'] as List).map((e) => Map<String, dynamic>.from(e)));
-
-    for (final s in solicitudes) {
+    for (final s in _solicitudes) {
       if (s['id'] == solicitudId) {
         s['procesado'] = true;
         break;
       }
     }
-    datos['solicitudes'] = solicitudes;
-    archivo.writeAsStringSync(jsonEncode(datos));
-    _log('Solicitud $solicitudId confirmada');
-    return Response.ok(jsonEncode({'ok': true}),
-        headers: {'content-type': 'application/json'});
+    print('[${DateTime.now().toIso8601String()}] Solicitud $solicitudId confirmada');
+    return Response.ok(
+      jsonEncode({'ok': true}),
+      headers: {'content-type': 'application/json'},
+    );
   } catch (e) {
     return Response.internalServerError(body: 'Error: $e');
   }
-}
-
-Response _estadoServidor(Request req) {
-  return Response.ok(
-    jsonEncode({'estado': 'activo', 'hora': DateTime.now().toIso8601String()}),
-    headers: {'content-type': 'application/json'},
-  );
-}
-
-void _log(String mensaje) {
-  final linea = '[${DateTime.now().toIso8601String()}] $mensaje';
-  print(linea);
-  try {
-    File(rutaLog).writeAsStringSync('$linea\n', mode: FileMode.append);
-  } catch (_) {}
 }

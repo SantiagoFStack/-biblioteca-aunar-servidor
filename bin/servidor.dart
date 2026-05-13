@@ -57,9 +57,19 @@ Response _estadoServidor(Request req) {
 }
 
 Response _formularioPrestamo(Request req) {
+  try {
   final libroId = req.url.queryParameters['id'] ?? '';
-  final titulo = req.url.queryParameters['titulo'] ?? 'Libro de biblioteca';
-  final tituloLegible = Uri.decodeComponent(titulo);
+  // 't' viene en base64url desde la app Flutter
+  final tituloB64 = req.url.queryParameters['t'] ?? '';
+  String tituloLegible = 'Libro de biblioteca';
+  if (tituloB64.isNotEmpty) {
+    try {
+      tituloLegible = utf8.decode(base64Url.decode(base64Url.normalize(tituloB64)));
+    } catch (_) {
+      tituloLegible = tituloB64;
+    }
+  }
+  final titulo = tituloLegible;
 
   final html = '''<!DOCTYPE html>
 <html lang="es">
@@ -187,6 +197,10 @@ Response _formularioPrestamo(Request req) {
 </html>''';
 
   return Response.ok(html, headers: {'content-type': 'text/html; charset=utf-8'});
+  } catch (e) {
+    print('Error en _formularioPrestamo: $e');
+    return Response.internalServerError(body: 'Error: $e');
+  }
 }
 
 Future<Response> _registrarPrestamo(Request req) async {
